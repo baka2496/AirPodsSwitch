@@ -1,0 +1,28 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compile and package
+        shell: powershell
+        run: .\build.ps1
+      - name: Upload Windows download
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: AirPodsSwitch-win-x64
+          path: |
+            dist/AirPodsSwitch-*-win-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

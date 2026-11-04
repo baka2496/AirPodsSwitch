@@ -1,0 +1,16 @@
+dist/
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.log
+names.txt
+devices.txt
+last-result.json
+last-volume.txt
+widget-settings.json
+status.json
+*.exe
+*.zip
+*.pdb
