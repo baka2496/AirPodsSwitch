@@ -96,6 +96,12 @@ namespace AirPodsSwitch
                 {
                     try { acquired = single.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
                     if (!acquired) return new SwitchResult { Message = "切換正在進行，請稍候。" };
+                    if (SimulateFailure && action != "disconnect")
+                    {
+                        Thread.Sleep(8000);
+                        reconnectRequested = true;
+                        throw new InvalidOperationException("（測試）模擬連線逾時。");
+                    }
                     using (Audio audio = new Audio())
                     {
                         Endpoint initial = Current(audio);
@@ -153,6 +159,52 @@ namespace AirPodsSwitch
                 }
                 finally { if (acquired) single.ReleaseMutex(); }
             }
+        }
+        // 連回電腦逾時後，耳機常常晚幾秒才真的連上。浮動圖示會在背景繼續看；
+        // 一看到已連線就呼叫這裡：補做解除靜音、恢復音量，並記一筆成功紀錄。
+        // 回傳 null 代表耳機仍未連上（或另一個切換正在進行）。
+        internal static SwitchResult FinishLateConnect(long waitedMilliseconds)
+        {
+            using (Mutex single = new Mutex(false, "Local\\AirPodsSwitch.Action"))
+            {
+                bool acquired = false;
+                try
+                {
+                    try { acquired = single.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired) return null;
+                    using (Audio audio = new Audio())
+                    {
+                        Endpoint endpoint = Current(audio);
+                        if (endpoint == null || endpoint.State != 1) return null;
+                        RestoreVolumeIfZero(audio, endpoint);
+                        audio.Unmute(endpoint.Id);
+                        endpoint = Current(audio);
+                        if (endpoint == null || endpoint.State != 1) return null;
+                        RememberVolume(endpoint);
+                        SwitchResult result = new SwitchResult {
+                            Action = "connect-late", Success = true, Connected = true, Muted = endpoint.Muted,
+                            VolumePercent = endpoint.VolumePercent, Milliseconds = waitedMilliseconds,
+                            DefaultOutput = IsDefault(audio, endpoint), DriverResult = "00000000",
+                            Message = "耳機較晚連上，已連回電腦並解除靜音。"
+                        };
+                        Save(result);
+                        return result;
+                    }
+                }
+                catch (Exception error) { Program.Log("LATE CONNECT " + error.Message); return null; }
+                finally { if (acquired) single.ReleaseMutex(); }
+            }
+        }
+        // 測試用：環境變數 AIRPODS_SIMULATE_FAIL=1 時，「連回電腦」等 8 秒後直接回報逾時，
+        // 不呼叫藍牙驅動，用來在不中斷耳機的情況下測試「背景繼續等」與提示流程。
+        // 設為 2 時，背景等待也一律當作沒連上，用來測試 60 秒後的失敗提示。
+        internal static bool SimulateFailure
+        {
+            get { string v = Environment.GetEnvironmentVariable("AIRPODS_SIMULATE_FAIL"); return v == "1" || v == "2"; }
+        }
+        internal static bool SimulateNeverConnect
+        {
+            get { return Environment.GetEnvironmentVariable("AIRPODS_SIMULATE_FAIL") == "2"; }
         }
         private static void Save(SwitchResult result)
         {
