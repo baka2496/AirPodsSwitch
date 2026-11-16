@@ -9,7 +9,7 @@
 ## 開始使用
 
 1. 先在 Windows 藍牙設定中完成耳機配對。
-2. 從 [Releases](https://github.com/baka9881/AirPodsSwitch/releases/latest) 下載 `AirPodsSwitch-0.1.0-win-x64.zip` 並解壓縮。
+2. 從 [Releases](https://github.com/baka9881/AirPodsSwitch/releases/latest) 下載 `AirPodsSwitch-0.2.0-win-x64.zip` 並解壓縮。
 3. 執行 `AirPodsSwitch.exe`，第一次啟動時選擇自己的耳機。
 4. 點一下浮動圖示，就會要求耳機連回電腦並解除耳機輸出靜音。
 
@@ -68,7 +68,7 @@ powershell -NoProfile -File .\build.ps1
 可指定版本或輸出目錄：
 
 ```powershell
-.\build.ps1 -Version 0.1.0 -OutputDirectory .\dist
+.\build.ps1 -Version 0.2.0 -OutputDirectory .\dist
 ```
 
 ## 開發參考
