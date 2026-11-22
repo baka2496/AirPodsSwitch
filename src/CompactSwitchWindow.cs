@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -18,19 +20,23 @@ namespace AirPodsSwitch
         public bool OnTop { get; set; }
     }
 
-    // 浮動圖示旁邊的小提示框。Windows「通知」被關掉時，系統匣的通知泡泡不會出現，
-    // 所以狀態訊息改用這個自己畫的小框顯示：不搶焦點、幾秒後自動消失、點一下就關。
     internal sealed class StatusBubble : Form
     {
-        private readonly Label title = new Label { AutoSize = true, Font = new Font("Microsoft JhengHei UI", 10, FontStyle.Bold), ForeColor = Color.White, Location = new Point(12, 9) };
-        private readonly Label body = new Label { AutoSize = true, Font = new Font("Microsoft JhengHei UI", 9), ForeColor = Color.FromArgb(190, 200, 218), Location = new Point(12, 32), MaximumSize = new Size(300, 0) };
+        private readonly Label title = new Label { AutoSize = true, Font = new Font("Microsoft JhengHei UI", 10, FontStyle.Bold), ForeColor = Color.White, Location = new Point(14, 9), BackColor = Color.Transparent };
+        private readonly Label body = new Label { AutoSize = true, Font = new Font("Microsoft JhengHei UI", 9), ForeColor = Color.FromArgb(196, 206, 224), Location = new Point(14, 32), MaximumSize = new Size(310, 0), BackColor = Color.Transparent };
         private readonly System.Windows.Forms.Timer hide = new System.Windows.Forms.Timer();
-        private readonly Panel accent = new Panel { Location = new Point(0, 0), Width = 4 };
+        private Color accentColor = Color.FromArgb(108, 155, 255);
+
         internal StatusBubble()
         {
-            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
-            StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(28, 32, 41); AutoScaleMode = AutoScaleMode.None;
-            Controls.AddRange(new Control[] { accent, title, body });
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            DoubleBuffered = true;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Color.FromArgb(26, 30, 39);
+            AutoScaleMode = AutoScaleMode.None;
+            Controls.AddRange(new Control[] { title, body });
             hide.Tick += (sender, e) => { hide.Stop(); Hide(); };
             EventHandler close = (sender, e) => { hide.Stop(); Hide(); };
             Click += close; title.Click += close; body.Click += close;
@@ -38,21 +44,32 @@ namespace AirPodsSwitch
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override CreateParams CreateParams
         {
-            get { CreateParams p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x00000080; return p; } // 不搶焦點、不出現在 Alt+Tab
+            get { CreateParams p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x00000080; return p; }
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using (SolidBrush bar = new SolidBrush(accentColor))
+                e.Graphics.FillRectangle(bar, 0, 0, 4, Height);
+            using (Pen border = new Pen(Color.FromArgb(62, 72, 92), 1f))
+                e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
         }
         internal string LastTitle { get; private set; }
         internal void ShowNear(Rectangle anchor, string heading, string text, Color color, int milliseconds)
         {
             LastTitle = heading;
-            title.Text = heading; body.Text = text; accent.BackColor = color;
-            int width = Math.Max(title.PreferredWidth, body.PreferredWidth) + 26;
-            int height = 32 + body.PreferredHeight + 10;
-            ClientSize = new Size(width, height); accent.Height = height;
+            title.Text = heading;
+            body.Text = text;
+            accentColor = color;
+            int width = Math.Max(title.PreferredWidth, body.PreferredWidth) + 28;
+            int height = 32 + body.PreferredHeight + 11;
+            ClientSize = new Size(width, height);
             Rectangle area = Screen.FromRectangle(anchor).WorkingArea;
             int x = anchor.Left - width - 8; if (x < area.Left) x = anchor.Right + 8;
             int y = anchor.Bottom - height; if (y < area.Top) y = area.Top;
             Location = new Point(Math.Max(area.Left, Math.Min(area.Right - width, x)), Math.Min(area.Bottom - height, y));
-            if (!Visible) Show(); else Invalidate(true);
+            if (!Visible) Show();
+            Invalidate(true);
             TopMost = true;
             hide.Stop(); hide.Interval = milliseconds; hide.Start();
         }
@@ -64,12 +81,14 @@ namespace AirPodsSwitch
         private readonly StatusBubble bubble = new StatusBubble();
         private static readonly Color InfoColor = Color.FromArgb(108, 155, 255);
         private static readonly Color OkColor = Color.FromArgb(104, 217, 157);
+        private static readonly Color MuteColor = Color.FromArgb(245, 176, 65);
         private static readonly Color WarnColor = Color.FromArgb(237, 111, 107);
         private const string StartupKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
         private readonly string settingsPath = Path.Combine(SwitchOperations.Root, "widget-settings.json");
         private readonly EventWaitHandle showRequest = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\AirPodsSwitch.ShowPanel");
         private readonly System.Windows.Forms.Timer refresh = new System.Windows.Forms.Timer { Interval = 1500 };
-        private readonly System.Windows.Forms.Timer animation = new System.Windows.Forms.Timer { Interval = 90 };
+        private readonly System.Windows.Forms.Timer animation = new System.Windows.Forms.Timer { Interval = 60 };
+        private readonly System.Windows.Forms.Timer clickTimer = new System.Windows.Forms.Timer { Interval = 260 };
         private readonly ToolTip tip = new ToolTip { InitialDelay = 300, ReshowDelay = 100, AutoPopDelay = 9000 };
         private readonly ContextMenuStrip menu = new ContextMenuStrip();
         private readonly ToolStripMenuItem connectItem;
@@ -78,7 +97,10 @@ namespace AirPodsSwitch
         private readonly ToolStripMenuItem startupItem;
         private readonly ToolStripMenuItem sizesItem;
         private readonly NotifyIcon tray;
+        private readonly PassiveConnectDetector passiveDetector = new PassiveConnectDetector();
+
         private bool busy;
+        private bool passiveGuarding;
         private bool connected;
         private bool muted;
         private bool failed;
@@ -93,22 +115,57 @@ namespace AirPodsSwitch
         private int shownSecond = -1;
         private string currentAction;
         private DateTime lateUntil;
+        private DateTime nextLateRetryAt;
+        private int lateRetryCount;
         private readonly System.Diagnostics.Stopwatch actionTimer = new System.Diagnostics.Stopwatch();
         private const int LateWaitSeconds = 60;
         private const int SlowNoticeSeconds = 6;
         private float volume;
+        private int? batteryPercent;
+        private DateTime nextBatteryCheck = DateTime.MinValue;
+        private bool batteryChecking;
+        private List<string> batteryKeywords = new List<string>();
         private int phase;
         private Point mouseOrigin;
         private Point locationOrigin;
 
         [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr window, int id);
+        [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr handle);
+        [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr GetDC(IntPtr hWnd);
+        [DllImport("user32.dll", SetLastError = true)] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+        [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+        [DllImport("gdi32.dll", SetLastError = true)] private static extern bool DeleteDC(IntPtr hDC);
+        [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+        [DllImport("gdi32.dll", SetLastError = true)] private static extern bool DeleteObject(IntPtr hObject);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, IntPtr pptDst, ref NativeSize psize, IntPtr hdcSrc, ref NativePoint pptSrc, int crKey, ref BlendFunction pblend, int dwFlags);
+
+        [StructLayout(LayoutKind.Sequential)] private struct NativePoint { internal int X; internal int Y; }
+        [StructLayout(LayoutKind.Sequential)] private struct NativeSize { internal int Width; internal int Height; }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct BlendFunction
+        {
+            internal byte BlendOp;
+            internal byte BlendFlags;
+            internal byte SourceConstantAlpha;
+            internal byte AlphaFormat;
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams p = base.CreateParams;
+                p.ExStyle |= 0x00080000 | 0x00000080;
+                return p;
+            }
+        }
 
         internal CompactSwitchWindow(bool hidden)
         {
             Text = "AirPods 一鍵切換";
             AccessibleName = "AirPods 浮動圖示";
-            AccessibleDescription = "左鍵連回電腦，右鍵開啟功能選單，可拖曳圖示。";
+            AccessibleDescription = "左鍵連回電腦，滾輪調音量，中鍵或雙擊中斷連線，右鍵開啟功能選單，可拖曳圖示。";
             FormBorderStyle = FormBorderStyle.None;
             ControlBox = false;
             MinimizeBox = false;
@@ -118,7 +175,6 @@ namespace AirPodsSwitch
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             AutoScaleMode = AutoScaleMode.None;
-            DoubleBuffered = true;
             BackColor = Color.FromArgb(28, 32, 41);
             Cursor = Cursors.Hand;
             TopMost = true;
@@ -127,7 +183,6 @@ namespace AirPodsSwitch
             ClientSize = new Size(settings.Size, settings.Size);
             Location = KeepVisible(new Point(settings.X, settings.Y));
             TopMost = settings.OnTop;
-            SetRoundedRegion();
 
             connectItem = new ToolStripMenuItem("連回電腦    Ctrl+Alt+A", null, (sender, e) => StartAction("connect"));
             disconnectItem = new ToolStripMenuItem("中斷電腦連線    Ctrl+Alt+D", null, (sender, e) => StartAction("disconnect"));
@@ -145,7 +200,7 @@ namespace AirPodsSwitch
             };
             menu.Items.AddRange(new ToolStripItem[] {
                 connectItem, disconnectItem, new ToolStripSeparator(),
-                new ToolStripMenuItem("選擇耳機…", null, (sender, e) => { if (!busy && HeadphoneSetup.Configure()) { failed = false; RefreshStatus(); } }),
+                new ToolStripMenuItem("選擇耳機…", null, (sender, e) => { if (!busy && HeadphoneSetup.Configure()) { failed = false; batteryKeywords.Clear(); RefreshStatus(); } }),
                 sizesItem, onTopItem, startupItem,
                 new ToolStripSeparator(), new ToolStripMenuItem("隱藏浮動圖示", null, (sender, e) => Hide()),
                 new ToolStripMenuItem("結束程式", null, (sender, e) => { allowExit = true; Close(); })
@@ -160,9 +215,11 @@ namespace AirPodsSwitch
             tray = new NotifyIcon { Icon = LoadTrayIcon(), Text = "AirPods 一鍵切換", Visible = true, ContextMenuStrip = trayMenu };
             tray.MouseClick += (sender, e) => { if (e.Button == MouseButtons.Left) ShowWidget(); };
 
+            clickTimer.Tick += (sender, e) => { clickTimer.Stop(); StartAction("connect"); };
             refresh.Tick += (sender, e) => { if (showRequest.WaitOne(0)) ShowWidget(); RefreshStatus(); };
             animation.Tick += (sender, e) => {
-                phase = (phase + 24) % 360; Invalidate();
+                phase = (phase + 18) % 360;
+                RenderLayered();
                 int second = (int)actionTimer.Elapsed.TotalSeconds;
                 if ((busy || waitingLate) && second != shownSecond) { shownSecond = second; UpdateTip(); }
                 if (busy && currentAction == "connect" && !slowNotified && actionTimer.Elapsed.TotalSeconds >= SlowNoticeSeconds)
@@ -176,9 +233,12 @@ namespace AirPodsSwitch
                 registeredConnect = RegisterHotKey(Handle, 1, 0x4003, 0x41);
                 registeredDisconnect = RegisterHotKey(Handle, 2, 0x4003, 0x44);
                 Program.Log("WIDGET " + ClientSize.Width + "x" + ClientSize.Height + " at " + Left + "," + Top + "; HOTKEY connect=" + registeredConnect + " disconnect=" + registeredDisconnect);
-                RefreshStatus(); refresh.Start();
+                RenderLayered();
+                RefreshStatus();
+                refresh.Start();
                 if (hidden) BeginInvoke((Action)delegate { Hide(); });
             };
+            VisibleChanged += (sender, e) => { if (Visible && IsHandleCreated) RenderLayered(); };
             FormClosing += (sender, e) => {
                 if (!allowExit && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
             };
@@ -186,34 +246,31 @@ namespace AirPodsSwitch
                 SaveSettings();
                 if (registeredConnect) UnregisterHotKey(Handle, 1);
                 if (registeredDisconnect) UnregisterHotKey(Handle, 2);
-                refresh.Dispose(); animation.Dispose(); tip.Dispose(); showRequest.Dispose(); tray.Dispose(); trayMenu.Dispose(); menu.Dispose(); bubble.Dispose(); if (trayIcon != null) trayIcon.Dispose();
+                refresh.Dispose(); animation.Dispose(); clickTimer.Dispose(); tip.Dispose(); showRequest.Dispose(); tray.Dispose(); trayMenu.Dispose(); menu.Dispose(); bubble.Dispose(); if (trayIcon != null) trayIcon.Dispose();
             };
         }
 
-        // 右下角圖示：用和浮動圖示同一套畫法畫耳機，右下角小圓點顯示狀態（綠＝已連線、灰＝未連線、紅＝失敗）。
-        // 不直接讀 .ico 檔，因為該檔的小尺寸是 PNG 壓縮格式，.NET Framework 讀出來會變成雜訊。
-        [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr handle);
         private Icon trayIcon;
         private string trayIconState;
         private Icon LoadTrayIcon() { UpdateTrayIcon(); return trayIcon ?? SystemIcons.Information; }
         private void UpdateTrayIcon()
         {
             bool spinning = busy || waitingLate;
-            string state = (spinning ? "busy" : failed ? "failed" : connected ? "on" : "off");
+            string state = spinning ? "busy" : failed ? "failed" : connected ? (muted ? "muted" : "on") : "off";
             if (state == trayIconState) return;
             try
             {
                 Size size = SystemInformation.SmallIconSize;
-                using (Bitmap bitmap = new Bitmap(size.Width, size.Height))
+                using (Bitmap bitmap = RenderBitmap(Math.Max(size.Width, size.Height), connected, muted, failed && !spinning, false, false, 0))
                 {
-                    using (Graphics graphics = Graphics.FromImage(bitmap))
+                    if (spinning)
                     {
-                        graphics.Clear(Color.Transparent);
-                        DrawIcon(graphics, size, BackColor, false, failed && !spinning, connected, false, 0);
-                        if (spinning)
+                        using (Graphics g = Graphics.FromImage(bitmap))
                         {
-                            graphics.ResetTransform(); graphics.ScaleTransform(size.Width / 48f, size.Height / 48f);
-                            using (SolidBrush dot = new SolidBrush(Color.FromArgb(112, 163, 255))) graphics.FillEllipse(dot, 33, 33, 12, 12);
+                            g.SmoothingMode = SmoothingMode.AntiAlias;
+                            g.ScaleTransform(bitmap.Width / 48f, bitmap.Height / 48f);
+                            using (SolidBrush dot = new SolidBrush(Color.FromArgb(112, 163, 255)))
+                                g.FillEllipse(dot, 33, 33, 12, 12);
                         }
                     }
                     IntPtr handle = bitmap.GetHicon();
@@ -227,6 +284,7 @@ namespace AirPodsSwitch
             }
             catch (Exception error) { Program.Log("TRAY ICON " + error.Message); }
         }
+
         private WidgetSettings LoadSettings()
         {
             Rectangle area = Screen.PrimaryScreen.WorkingArea;
@@ -261,12 +319,15 @@ namespace AirPodsSwitch
         {
             ToolStripMenuItem item = new ToolStripMenuItem(label) { Checked = ClientSize.Width == pixels };
             item.Click += (sender, e) => {
-                ClientSize = new Size(pixels, pixels); Location = KeepVisible(Location); SetRoundedRegion();
+                ClientSize = new Size(pixels, pixels);
+                Location = KeepVisible(Location);
                 foreach (ToolStripMenuItem option in sizesItem.DropDownItems) option.Checked = option == item;
-                SaveSettings(); Invalidate();
+                SaveSettings();
+                RenderLayered();
             };
             sizesItem.DropDownItems.Add(item);
         }
+
         private static GraphicsPath Rounded(RectangleF bounds, float radius)
         {
             GraphicsPath path = new GraphicsPath();
@@ -277,46 +338,127 @@ namespace AirPodsSwitch
             path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
             path.CloseFigure(); return path;
         }
-        private void SetRoundedRegion()
+
+        internal static Bitmap RenderBitmap(int dimension, bool connected, bool muted, bool failed, bool busy, bool hovered, int phase)
         {
-            Region old = Region;
-            using (GraphicsPath path = Rounded(new RectangleF(0, 0, Width, Height), Width / 4f)) Region = new Region(path);
-            if (old != null) old.Dispose();
+            Bitmap bmp = new Bitmap(dimension, dimension, PixelFormat.Format32bppPArgb);
+            using (Graphics graphics = Graphics.FromImage(bmp))
+            {
+                graphics.Clear(Color.Transparent);
+                DrawIcon(graphics, new Size(dimension, dimension), Color.FromArgb(28, 32, 41), hovered, failed, connected, muted, busy, phase);
+            }
+            return bmp;
         }
-        protected override void OnPaint(PaintEventArgs e)
+
+        private void RenderLayered()
         {
-            base.OnPaint(e);
-            DrawIcon(e.Graphics, ClientSize, BackColor, hovered, failed, connected, busy || waitingLate, phase);
+            if (IsDisposed || !IsHandleCreated || !Visible) return;
+            using (Bitmap bitmap = RenderBitmap(ClientSize.Width, connected, muted, failed, busy || waitingLate, hovered, phase))
+            {
+                IntPtr screenDc = GetDC(IntPtr.Zero);
+                IntPtr memDc = CreateCompatibleDC(screenDc);
+                IntPtr hBitmap = IntPtr.Zero;
+                IntPtr oldBitmap = IntPtr.Zero;
+                try
+                {
+                    hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+                    oldBitmap = SelectObject(memDc, hBitmap);
+                    NativeSize size = new NativeSize { Width = bitmap.Width, Height = bitmap.Height };
+                    NativePoint src = new NativePoint { X = 0, Y = 0 };
+                    BlendFunction blend = new BlendFunction { BlendOp = 0, BlendFlags = 0, SourceConstantAlpha = 255, AlphaFormat = 1 };
+                    UpdateLayeredWindow(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref blend, 2);
+                }
+                finally
+                {
+                    if (oldBitmap != IntPtr.Zero) SelectObject(memDc, oldBitmap);
+                    if (hBitmap != IntPtr.Zero) DeleteObject(hBitmap);
+                    DeleteDC(memDc);
+                    ReleaseDC(IntPtr.Zero, screenDc);
+                }
+            }
         }
-        internal static void DrawIcon(Graphics graphics, Size dimensions, Color backgroundColor, bool hovered, bool failed, bool connected, bool busy, int phase)
+
+        internal static void DrawIcon(Graphics graphics, Size dimensions, Color backgroundColor, bool hovered, bool failed, bool connected, bool muted, bool busy, int phase)
         {
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.CompositingQuality = CompositingQuality.HighQuality;
             graphics.ScaleTransform(dimensions.Width / 48f, dimensions.Height / 48f);
-            using (GraphicsPath background = Rounded(new RectangleF(1, 1, 46, 46), 11))
-            using (SolidBrush fill = new SolidBrush(hovered ? Color.FromArgb(43, 52, 70) : backgroundColor))
-            using (Pen edge = new Pen(failed ? Color.FromArgb(237, 111, 107) : hovered ? Color.FromArgb(108, 155, 255) : Color.FromArgb(79, 96, 128), 1.4f))
-            { graphics.FillPath(fill, background); graphics.DrawPath(edge, background); }
-            using (Pen band = new Pen(Color.FromArgb(237, 242, 255), 2.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                graphics.DrawArc(band, 12.5f, 10, 23, 25, 180, 180);
-            using (SolidBrush white = new SolidBrush(Color.FromArgb(237, 242, 255)))
-            using (GraphicsPath left = Rounded(new RectangleF(10.5f, 22, 7, 14), 3))
-            using (GraphicsPath right = Rounded(new RectangleF(30.5f, 22, 7, 14), 3))
-            { graphics.FillPath(white, left); graphics.FillPath(white, right); }
-            if (busy)
+
+            if (hovered || busy)
             {
-                using (Pen spinner = new Pen(Color.FromArgb(112, 163, 255), 2) { StartCap = LineCap.Round, EndCap = LineCap.Round }) graphics.DrawArc(spinner, 5, 5, 38, 38, phase, 100);
+                Color glow = busy ? Color.FromArgb(65, 112, 163, 255) : Color.FromArgb(55, 108, 155, 255);
+                using (GraphicsPath halo = Rounded(new RectangleF(0.6f, 0.6f, 46.8f, 46.8f), 12.2f))
+                using (Pen haloPen = new Pen(glow, 1.8f))
+                    graphics.DrawPath(haloPen, halo);
             }
             else
             {
-                using (SolidBrush border = new SolidBrush(backgroundColor)) graphics.FillEllipse(border, 33, 33, 12, 12);
-                using (SolidBrush dot = new SolidBrush(failed ? Color.FromArgb(237, 111, 107) : connected ? Color.FromArgb(104, 217, 157) : Color.FromArgb(128, 142, 168))) graphics.FillEllipse(dot, 35, 35, 8, 8);
+                using (GraphicsPath shadow = Rounded(new RectangleF(1.2f, 1.8f, 45.6f, 45.6f), 11.5f))
+                using (SolidBrush shadowBrush = new SolidBrush(Color.FromArgb(42, 0, 0, 0)))
+                    graphics.FillPath(shadowBrush, shadow);
+            }
+
+            using (GraphicsPath background = Rounded(new RectangleF(1.5f, 1.5f, 45f, 45f), 11f))
+            using (LinearGradientBrush fill = new LinearGradientBrush(
+                new RectangleF(1.5f, 1.5f, 45f, 45f),
+                hovered ? Color.FromArgb(48, 58, 78) : Color.FromArgb(36, 41, 53),
+                hovered ? Color.FromArgb(35, 43, 59) : backgroundColor,
+                LinearGradientMode.Vertical))
+            using (Pen edge = new Pen(
+                failed ? Color.FromArgb(237, 111, 107)
+                : busy ? Color.FromArgb(112, 163, 255)
+                : hovered ? Color.FromArgb(120, 168, 255)
+                : (connected && muted) ? Color.FromArgb(245, 176, 65)
+                : Color.FromArgb(82, 98, 130), 1.35f))
+            {
+                graphics.FillPath(fill, background);
+                graphics.DrawPath(edge, background);
+            }
+
+            using (Pen band = new Pen(Color.FromArgb(238, 243, 255), 2.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                graphics.DrawArc(band, 12.5f, 10, 23, 25, 180, 180);
+            using (SolidBrush white = new SolidBrush(Color.FromArgb(238, 243, 255)))
+            using (GraphicsPath left = Rounded(new RectangleF(10.5f, 22, 7, 14), 3))
+            using (GraphicsPath right = Rounded(new RectangleF(30.5f, 22, 7, 14), 3))
+            {
+                graphics.FillPath(white, left);
+                graphics.FillPath(white, right);
+            }
+
+            if (busy)
+            {
+                using (Pen spinner = new Pen(Color.FromArgb(112, 163, 255), 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    graphics.DrawArc(spinner, 5.2f, 5.2f, 37.6f, 37.6f, phase, 105);
+            }
+            else
+            {
+                using (SolidBrush border = new SolidBrush(backgroundColor))
+                    graphics.FillEllipse(border, 32.5f, 32.5f, 12.5f, 12.5f);
+                Color dotColor = failed ? WarnColor
+                    : (connected && muted) ? MuteColor
+                    : connected ? OkColor
+                    : Color.FromArgb(128, 142, 168);
+                using (SolidBrush dot = new SolidBrush(dotColor))
+                    graphics.FillEllipse(dot, 34.5f, 34.5f, 8.5f, 8.5f);
+                if (connected && muted && !failed)
+                {
+                    using (Pen slash = new Pen(backgroundColor, 1.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        graphics.DrawLine(slash, 36.2f, 41.2f, 41.2f, 36.2f);
+                }
             }
         }
-        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
-        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; Invalidate(); }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; RenderLayered(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; RenderLayered(); }
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Middle)
+            {
+                StartAction(connected ? "disconnect" : "connect");
+                return;
+            }
             if (e.Button != MouseButtons.Left) return;
             pointerDown = true; dragged = false; mouseOrigin = MousePosition; locationOrigin = Location; Capture = true;
         }
@@ -334,35 +476,129 @@ namespace AirPodsSwitch
             base.OnMouseUp(e);
             if (e.Button != MouseButtons.Left || !pointerDown) return;
             pointerDown = false; Capture = false;
-            if (dragged) SaveSettings(); else StartAction("connect");
+            if (dragged) { SaveSettings(); return; }
+            if (busy) return;
+
+            if (!connected || muted)
+            {
+                clickTimer.Stop();
+                StartAction("connect");
+            }
+            else if (clickTimer.Enabled)
+            {
+                clickTimer.Stop();
+                StartAction("disconnect");
+            }
+            else
+            {
+                clickTimer.Start();
+            }
         }
-        private void ShowWidget() { Location = KeepVisible(Location); Show(); BringToFront(); }
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            if (busy || !connected || e.Delta == 0) return;
+            float delta = e.Delta > 0 ? 0.02f : -0.02f;
+            bool unmutedNow;
+            float? next = SwitchOperations.AdjustVolume(delta, out unmutedNow);
+            if (!next.HasValue) return;
+            volume = next.Value;
+            if (unmutedNow) muted = false;
+            UpdateTip();
+            RenderLayered();
+            string msg = "目前音量 " + volume.ToString("0") + "%" + (unmutedNow ? "（已解除靜音）" : "");
+            Notify("AirPods 音量", msg, OkColor, 1500);
+        }
+
+        private void ShowWidget() { Location = KeepVisible(Location); Show(); BringToFront(); RenderLayered(); }
         protected override void WndProc(ref Message message)
         {
             if (message.Msg == 0x312 && message.WParam.ToInt32() == 1) { Program.Log("HOTKEY connect requested"); StartAction("connect"); return; }
             if (message.Msg == 0x312 && message.WParam.ToInt32() == 2) { Program.Log("HOTKEY disconnect requested"); StartAction("disconnect"); return; }
             base.WndProc(ref message);
         }
+
         private void RefreshStatus()
         {
             if (busy) return;
+            bool wasGuarding = passiveGuarding;
             try
             {
                 using (Audio audio = new Audio())
                 {
+                    if (batteryKeywords.Count == 0)
+                        batteryKeywords = SwitchOperations.ExtractBaseKeywords(audio.ConfiguredNames);
                     Endpoint endpoint = SwitchOperations.Current(audio);
                     connected = endpoint != null && endpoint.State == 1;
                     volume = endpoint == null ? 0 : endpoint.VolumePercent ?? 0;
                     muted = endpoint != null && endpoint.Muted == true;
-                    if (connected) SwitchOperations.RememberVolume(endpoint);
+
+                    if (!waitingLate && !wasGuarding)
+                    {
+                        if (passiveDetector.Observe(connected))
+                        {
+                            StartPassiveGuard();
+                        }
+                        else if (connected)
+                        {
+                            SwitchOperations.RememberVolume(endpoint);
+                        }
+                    }
                 }
             }
             catch { connected = false; }
+
+            if (connected) RefreshBatteryAsync();
+            else batteryPercent = null;
+
             if (waitingLate) CheckLateConnect();
-            UpdateTip(); Invalidate();
+            UpdateTip();
+            RenderLayered();
         }
-        // 「連回電腦」逾時後，在背景再等最多 60 秒：耳機一連上就補做解除靜音並通知；
-        // 時間到還沒連上，才真的顯示失敗。
+
+        private void RefreshBatteryAsync()
+        {
+            if (batteryChecking || DateTime.Now < nextBatteryCheck) return;
+            batteryChecking = true;
+            nextBatteryCheck = DateTime.Now.AddSeconds(15);
+            List<string> keys = new List<string>(batteryKeywords);
+            ThreadPool.QueueUserWorkItem(delegate {
+                int? pct = BluetoothBattery.TryReadPercent(keys);
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke((Action)delegate {
+                    batteryChecking = false;
+                    if (connected && batteryPercent != pct)
+                    {
+                        batteryPercent = pct;
+                        UpdateTip();
+                    }
+                });
+            });
+        }
+
+        private void StartPassiveGuard()
+        {
+            if (passiveGuarding || busy) return;
+            passiveGuarding = true;
+            ThreadPool.QueueUserWorkItem(delegate {
+                SwitchResult result = SwitchOperations.GuardPassiveConnect();
+                if (IsDisposed || !IsHandleCreated) return;
+                BeginInvoke((Action)delegate {
+                    passiveGuarding = false;
+                    if (result != null && result.Success)
+                    {
+                        connected = true;
+                        volume = result.VolumePercent ?? volume;
+                        muted = result.Muted == true;
+                        passiveDetector.Sync(true);
+                        UpdateTip();
+                        RenderLayered();
+                        Notify("AirPods 已自動連上", BuildConnectDetail(result, true), OkColor, result.VolumeRestoredFrom.HasValue ? 4000 : 2600);
+                    }
+                });
+            });
+        }
+
         private void CheckLateConnect()
         {
             SwitchResult late = connected && !SwitchOperations.SimulateNeverConnect
@@ -371,17 +607,25 @@ namespace AirPodsSwitch
             {
                 waitingLate = false; failed = false; animation.Stop(); actionTimer.Stop();
                 volume = late.VolumePercent ?? volume; muted = late.Muted == true;
+                passiveDetector.Sync(true);
                 Program.Log("LATE CONNECT ok after " + late.Milliseconds + " ms");
-                Notify("AirPods 已連回電腦", "耳機較晚連上，已自動解除靜音 · 音量 " + volume.ToString("0") + "%", OkColor, 4000);
+                Notify("AirPods 已連回電腦", "耳機較晚連上 · " + BuildConnectDetail(late, false), OkColor, 4000);
             }
             else if (DateTime.Now >= lateUntil)
             {
                 waitingLate = false; failed = true; animation.Stop(); actionTimer.Stop();
+                passiveDetector.Sync(false);
                 Program.Log("LATE CONNECT gave up");
                 Notify("AirPods 沒有連上", "已多等 " + LateWaitSeconds + " 秒仍未連上電腦。請確認耳機已戴上，再按一次重試。", WarnColor, 8000);
             }
+            else if (lateRetryCount < 2 && DateTime.Now >= nextLateRetryAt)
+            {
+                lateRetryCount++;
+                nextLateRetryAt = DateTime.Now.AddSeconds(20);
+                ThreadPool.QueueUserWorkItem(delegate { SwitchOperations.SendGentleRetry(); });
+            }
         }
-        // 在浮動圖示旁顯示提示；圖示被隱藏時，改顯示在螢幕右下角。
+
         private void Notify(string heading, string text, Color color, int milliseconds)
         {
             Rectangle area = Screen.PrimaryScreen.WorkingArea;
@@ -389,21 +633,48 @@ namespace AirPodsSwitch
             bubble.ShowNear(anchor, heading, text, color, milliseconds);
             Program.Log("NOTICE " + heading + " | " + text);
         }
+
         private void UpdateTip()
         {
+            string bat = batteryPercent.HasValue ? " · 電量 " + batteryPercent.Value + "%" : "";
             string state = busy ? "正在切換…（" + actionTimer.Elapsed.TotalSeconds.ToString("0") + " 秒）"
                 : waitingLate ? "等待耳機連上…（最多再 " + Math.Max(0, (lateUntil - DateTime.Now).TotalSeconds).ToString("0") + " 秒）"
-                : connected ? "電腦端已連線 · 音量 " + volume.ToString("0") + "%" + (muted ? " · 靜音" : "") : "電腦端未連線";
-            tip.SetToolTip(this, "AirPods｜" + state + "\n左鍵：連回電腦　拖曳：移動\n右鍵：功能選單\nCtrl+Alt+A 連回電腦｜Ctrl+Alt+D 中斷");
-            tray.Text = "AirPods｜" + state;
-            connectItem.Enabled = !busy; disconnectItem.Enabled = !busy;
+                : connected ? "已連線 · 音量 " + volume.ToString("0") + "%" + (muted ? " · 已靜音" : "") + bat : "電腦端未連線";
+            tip.SetToolTip(this,
+                "AirPods｜" + state +
+                "\n左鍵：連回電腦　滾輪：調音量" +
+                "\n中鍵／已連線雙擊：中斷連線　拖曳：移動" +
+                "\n右鍵：選單　Ctrl+Alt+A 連回｜Ctrl+Alt+D 中斷");
+            string trayText = "AirPods｜" + state;
+            tray.Text = trayText.Length <= 63 ? trayText : trayText.Substring(0, 63);
+            connectItem.Enabled = !busy;
+            disconnectItem.Enabled = !busy;
             UpdateTrayIcon();
         }
+
+        internal static string VolumeText(SwitchResult result)
+        {
+            string now = (result.VolumePercent ?? 0).ToString("0") + "%";
+            return result.VolumeRestoredFrom.HasValue
+                ? "音量已從 " + result.VolumeRestoredFrom.Value.ToString("0") + "% 調回 " + now
+                : "音量 " + now;
+        }
+
+        private static string BuildConnectDetail(SwitchResult result, bool passive)
+        {
+            List<string> parts = new List<string>();
+            parts.Add(passive ? "已自動確認有聲" : "已解除靜音");
+            parts.Add(VolumeText(result));
+            if (result.DefaultOutputForced) parts.Add("已切為預設播放");
+            return string.Join(" · ", parts.ToArray());
+        }
+
         private void StartAction(string action)
         {
             if (busy) return;
+            clickTimer.Stop();
             busy = true; failed = false; waitingLate = false; slowNotified = false; currentAction = action;
-            actionTimer.Restart(); animation.Start(); UpdateTip(); Invalidate();
+            actionTimer.Restart(); animation.Start(); UpdateTip(); RenderLayered();
             ThreadPool.QueueUserWorkItem(delegate {
                 SwitchResult result = SwitchOperations.Run(action);
                 if (IsDisposed || !IsHandleCreated) return;
@@ -412,15 +683,19 @@ namespace AirPodsSwitch
                     bool canWaitLonger = !result.Success && action == "connect" && result.ReconnectRequested;
                     if (canWaitLonger)
                     {
-                        // 驅動已送出連線要求但耳機還沒出現：先不報失敗，背景繼續等。
-                        waitingLate = true; failed = false; lateUntil = DateTime.Now.AddSeconds(LateWaitSeconds);
+                        waitingLate = true; failed = false;
+                        lateRetryCount = 0;
+                        lateUntil = DateTime.Now.AddSeconds(LateWaitSeconds);
+                        nextLateRetryAt = DateTime.Now.AddSeconds(15);
                         Program.Log("CONNECT timed out, waiting up to " + LateWaitSeconds + "s in background: " + result.Message);
                         RefreshStatus();
                         return;
                     }
-                    failed = !result.Success; animation.Stop(); actionTimer.Stop(); RefreshStatus();
+                    failed = !result.Success; animation.Stop(); actionTimer.Stop();
+                    if (result.Success) passiveDetector.Sync(result.Connected);
+                    RefreshStatus();
                     if (!result.Success) Notify("AirPods 切換失敗", result.Message, WarnColor, 6000);
-                    else if (result.Connected) Notify("AirPods 已連回電腦", "已解除靜音 · 音量 " + (result.VolumePercent ?? 0).ToString("0") + "%", OkColor, 2500);
+                    else if (result.Connected) Notify("AirPods 已連回電腦", BuildConnectDetail(result, false), OkColor, result.VolumeRestoredFrom.HasValue ? 4000 : 2600);
                     else Notify("AirPods 已中斷電腦連線", "現在可以從 iPhone 選擇 AirPods。", InfoColor, 3000);
                 });
             });

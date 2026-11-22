@@ -20,6 +20,7 @@ namespace AirPodsSwitch
         internal readonly IMMDeviceEnumerator Enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
         private static readonly Guid VolumeId = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
         private readonly HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        internal IEnumerable<string> ConfiguredNames { get { return names; } }
         internal Audio()
         {
             string path = AppPaths.NamesFile;
@@ -104,6 +105,33 @@ namespace AirPodsSwitch
                 if (volume != null) Marshal.ReleaseComObject(volume);
                 Marshal.ReleaseComObject(device);
             }
+        }
+
+        internal bool SetDefaultOutput(string id)
+        {
+            if (string.IsNullOrEmpty(id) || !id.StartsWith("{0.0.0.", StringComparison.OrdinalIgnoreCase)) return false;
+            IPolicyConfig config = null;
+            try
+            {
+                config = (IPolicyConfig)new PolicyConfigClient();
+                int hr0 = config.SetDefaultEndpoint(id, 0);
+                int hr1 = config.SetDefaultEndpoint(id, 1);
+                return hr0 >= 0 && hr1 >= 0;
+            }
+            catch { return false; }
+            finally { if (config != null) Marshal.ReleaseComObject(config); }
+        }
+
+        internal static bool CanActivatePolicyConfig()
+        {
+            IPolicyConfig config = null;
+            try
+            {
+                config = (IPolicyConfig)new PolicyConfigClient();
+                return config != null;
+            }
+            catch { return false; }
+            finally { if (config != null) Marshal.ReleaseComObject(config); }
         }
 
         private static IAudioEndpointVolume GetVolume(IMMDevice device)
@@ -195,5 +223,22 @@ namespace AirPodsSwitch
         [PreserveSig] int OnDeviceRemoved([MarshalAs(UnmanagedType.LPWStr)] string id);
         [PreserveSig] int OnDefaultDeviceChanged(int flow, int role, [MarshalAs(UnmanagedType.LPWStr)] string id);
         [PreserveSig] int OnPropertyValueChanged([MarshalAs(UnmanagedType.LPWStr)] string id, PropertyKey key);
+    }
+    [ComImport, Guid("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")] internal class PolicyConfigClient { }
+    [ComImport, Guid("F8679F50-850A-41CF-9C72-430F290290C8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IPolicyConfig
+    {
+        [PreserveSig] int GetMixFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, out IntPtr format);
+        [PreserveSig] int GetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int defaultFormat, out IntPtr format);
+        [PreserveSig] int ResetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+        [PreserveSig] int SetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr endpointFormat, IntPtr mixFormat);
+        [PreserveSig] int GetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int defaultPeriod, out long defaultPeriodVal, out long minPeriodVal);
+        [PreserveSig] int SetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ref long period);
+        [PreserveSig] int GetShareMode([MarshalAs(UnmanagedType.LPWStr)] string deviceId, out IntPtr mode);
+        [PreserveSig] int SetShareMode([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr mode);
+        [PreserveSig] int GetPropertyValue([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int store, ref PropertyKey key, out PropVariant value);
+        [PreserveSig] int SetPropertyValue([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int store, ref PropertyKey key, ref PropVariant value);
+        [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int role);
+        [PreserveSig] int SetEndpointVisibility([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int visible);
     }
 }
