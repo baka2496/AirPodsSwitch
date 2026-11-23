@@ -239,6 +239,15 @@ namespace AirPodsSwitch
                 if (hidden) BeginInvoke((Action)delegate { Hide(); });
             };
             VisibleChanged += (sender, e) => { if (Visible && IsHandleCreated) RenderLayered(); };
+            // 浮動圖示不該被最小化：被最小化就馬上還原並重畫，圖示不會消失。
+            Resize += (sender, e) => {
+                if (WindowState == FormWindowState.Minimized)
+                {
+                    Program.Log("WIDGET minimized by system; restoring");
+                    BeginInvoke((Action)delegate { if (!IsDisposed) { WindowState = FormWindowState.Normal; ClientSize = new Size(Math.Max(40, ClientSize.Width), Math.Max(40, ClientSize.Height)); RenderLayered(); } });
+                }
+                else RenderLayered();
+            };
             FormClosing += (sender, e) => {
                 if (!allowExit && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
             };
@@ -308,6 +317,8 @@ namespace AirPodsSwitch
         }
         private void SaveSettings()
         {
+            // 被最小化時位置／大小是假的（0×0），存下去下次會跑到螢幕角落，所以不存。
+            if (WindowState == FormWindowState.Minimized || ClientSize.Width < 40 || ClientSize.Height < 40) return;
             try { File.WriteAllText(settingsPath, new JavaScriptSerializer().Serialize(new WidgetSettings { X = Left, Y = Top, Size = ClientSize.Width, OnTop = TopMost })); }
             catch { }
         }
@@ -341,6 +352,8 @@ namespace AirPodsSwitch
 
         internal static Bitmap RenderBitmap(int dimension, bool connected, bool muted, bool failed, bool busy, bool hovered, int phase)
         {
+            // 視窗被最小化（Win+M 等）時大小是 0×0，new Bitmap(0,0) 會丟「參數無效」。
+            if (dimension < 1) dimension = 1;
             Bitmap bmp = new Bitmap(dimension, dimension, PixelFormat.Format32bppPArgb);
             using (Graphics graphics = Graphics.FromImage(bmp))
             {
@@ -353,6 +366,13 @@ namespace AirPodsSwitch
         private void RenderLayered()
         {
             if (IsDisposed || !IsHandleCreated || !Visible) return;
+            // 被最小化時不畫（大小是 0×0）；還原時 Resize 事件會再畫一次。
+            if (WindowState == FormWindowState.Minimized || ClientSize.Width < 1 || ClientSize.Height < 1) return;
+            try { RenderLayeredCore(); }
+            catch (Exception error) { Program.Log("RENDER " + error.GetType().Name + ": " + error.Message); }
+        }
+        private void RenderLayeredCore()
+        {
             using (Bitmap bitmap = RenderBitmap(ClientSize.Width, connected, muted, failed, busy || waitingLate, hovered, phase))
             {
                 IntPtr screenDc = GetDC(IntPtr.Zero);
