@@ -598,6 +598,13 @@ namespace AirPodsSwitch
                 }
             });
 
+            test("ZeroSizeRendering", () =>
+            {
+                // 視窗被最小化時大小為 0×0，畫圖示不可丟「參數無效」。
+                using (Bitmap bmp = CompactSwitchWindow.RenderBitmap(0, true, false, false, false, false, 0))
+                    assert(bmp.Width >= 1 && bmp.Height >= 1, "zero size must be clamped to at least 1px");
+            });
+
             var report = new { Passed = failed.Count == 0, PassedCount = passed.Count, FailedCount = failed.Count, PassedTests = passed, FailedTests = failed };
             string json = new JavaScriptSerializer().Serialize(report);
             File.WriteAllText(Path.Combine(SwitchOperations.Root, "self-test-report.json"), json, System.Text.Encoding.UTF8);
@@ -613,6 +620,10 @@ namespace AirPodsSwitch
             if (args.Contains("--self-test")) return SelfTestRunner.Run();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            // 錯誤不再跳「Microsoft .NET Framework 未處理的例外狀況」視窗，改成把完整錯誤寫進 activity.log，程式繼續執行。
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (sender, e) => Program.Log("UNHANDLED (UI) " + e.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (sender, e) => Program.Log("UNHANDLED (background) " + e.ExceptionObject);
             if (args.Contains("--configure")) return HeadphoneSetup.Configure() ? 0 : 2;
             if (args.Contains("--quiet") && !HeadphoneSetup.HasConfiguredTarget()) return 2;
             if (!HeadphoneSetup.EnsureConfigured()) return 2;
