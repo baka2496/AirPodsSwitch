@@ -55,9 +55,10 @@ namespace AirPodsSwitch
         private static readonly string DevicesFile = Path.Combine(Root, "devices.txt");
         private const string ActionMutexName = "Local\\AirPodsSwitch.Action";
 
-        // 漸進節奏：前 3 次每 2.5 秒搶快，第 4～6 次放寬到 4.0～4.5 秒，
-        // 避免藍牙交接進行中一直被打斷重來（總時間約 20.5 秒）。
-        internal static readonly int[] AttemptWindowsMs = new int[] { 2500, 2500, 2500, 4000, 4500, 4500 };
+        // 送一次、安靜等 8 秒：實測耳機在最後一次連線要求後要安靜約 6 秒才連得上，
+        // 2.5～4.5 秒就重送會一直把連線打斷重來。重送間隔不可小於 MinQuietMs（自我檢查會擋）。
+        internal const int MinQuietMs = 7000;
+        internal static readonly int[] AttemptWindowsMs = new int[] { 8000, 8000, 8000 };
         private const int PollMs = 100;
         private const int AudioGuardMs = 600;
         internal const float VolumeDriftLimit = 10f;
@@ -343,7 +344,7 @@ namespace AirPodsSwitch
                         if (initial.State == 1) RememberVolume(initial);
                         connectedBefore = initial.State == 1;
                         bool connect = action == "connect" || (action == "toggle" && initial.State != 1);
-                        timeline.Add("start " + (connectedBefore ? "on" : "off") + " wprog");
+                        timeline.Add("start " + (connectedBefore ? "on" : "off") + " wquiet");
                         for (int attempt = 1; attempt <= AttemptWindowsMs.Length; attempt++)
                         {
                             attempts = attempt;
@@ -530,14 +531,13 @@ namespace AirPodsSwitch
             };
             Action<bool, string> assert = (ok, msg) => { if (!ok) throw new Exception(msg); };
 
-            test("ProgressivePacing", () =>
+            test("QuietPacing", () =>
             {
                 int[] w = SwitchOperations.AttemptWindowsMs;
-                assert(w.Length == 6, "expected 6 progressive attempts");
-                assert(w[0] == 2500 && w[1] == 2500 && w[2] == 2500, "first 3 attempts should be 2500ms");
-                assert(w[3] >= 4000 && w[4] >= 4000 && w[5] >= 4000, "later attempts should be >= 4000ms");
+                assert(w.Length >= 2, "need at least 2 attempts");
+                foreach (int ms in w) assert(ms >= SwitchOperations.MinQuietMs, "re-request after " + ms + "ms interrupts the Bluetooth handshake");
                 int total = w.Sum();
-                assert(total >= 19000 && total <= 22000, "total window should be ~20.5s");
+                assert(total >= 20000 && total <= 30000, "total window should be 20-30s");
             });
 
             test("VolumeDriftGuard", () =>
