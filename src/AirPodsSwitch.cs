@@ -243,8 +243,37 @@ namespace AirPodsSwitch
             finally { if (device != null) Marshal.ReleaseComObject(device); }
         }
 
+        internal static bool IsHandsFree(Endpoint e)
+        {
+            return e != null && e.Name != null && e.Name.IndexOf("Hands-Free", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // 有時只連上「聽音樂」那一路（立體聲），「通話（免持）」那一路沒連上，這時 Windows 顯示已連線、
+        // 音量正常，但聲音完全送不出去。補連免持那一路後立刻恢復出聲。不需要補連時回傳 null。
+        internal static Endpoint PickHandsFreeToConnect(IEnumerable<Endpoint> targets)
+        {
+            List<Endpoint> list = targets == null ? new List<Endpoint>() : targets.ToList();
+            bool stereoOn = list.Any(e => !IsHandsFree(e) && e.State == 1);
+            if (!stereoOn || list.Any(e => IsHandsFree(e) && e.State == 1)) return null;
+            return list.FirstOrDefault(e => IsHandsFree(e) && e.State != 4);
+        }
+
+        private static void EnsureHandsFree(Audio audio, Stopwatch timer, List<string> timeline)
+        {
+            try
+            {
+                Endpoint hf = PickHandsFreeToConnect(Targets(audio));
+                if (hf == null) return;
+                long sent = timer.ElapsedMilliseconds;
+                int hr = NativeBluetoothAudio.Request(audio, hf.Id, true, false);
+                timeline.Add("hfp@" + sent + "=" + hr.ToString("X8"));
+            }
+            catch (Exception error) { timeline.Add("hfp-err@" + timer.ElapsedMilliseconds + ":" + error.GetType().Name); }
+        }
+
         private static Endpoint FixAudio(Audio audio, Stopwatch timer, List<string> timeline, out float? volumeFrom, out bool defaultForced)
         {
+            EnsureHandsFree(audio, timer, timeline);
             volumeFrom = null;
             defaultForced = false;
             long connectedAt = timer.ElapsedMilliseconds;
@@ -530,6 +559,16 @@ namespace AirPodsSwitch
                 catch (Exception ex) { failed.Add(name + ": " + ex.Message); }
             };
             Action<bool, string> assert = (ok, msg) => { if (!ok) throw new Exception(msg); };
+
+            test("HandsFreeRepair", () =>
+            {
+                Func<string, uint, Endpoint> ep = (n, s) => new Endpoint { Id = n, Name = n, State = s, Target = true };
+                Endpoint stereo = ep("Headphones (AirPods)", 1), hfOff = ep("Headphones (AirPods Hands-Free)", 8);
+                assert(SwitchOperations.PickHandsFreeToConnect(new[] { stereo, hfOff }) == hfOff, "stereo on + hands-free off must repair hands-free");
+                assert(SwitchOperations.PickHandsFreeToConnect(new[] { stereo, ep(hfOff.Name, 1) }) == null, "both on: nothing to do");
+                assert(SwitchOperations.PickHandsFreeToConnect(new[] { ep(stereo.Name, 8), hfOff }) == null, "stereo off: do not touch");
+                assert(SwitchOperations.PickHandsFreeToConnect(new[] { stereo, ep(hfOff.Name, 4) }) == null, "hands-free not present: skip");
+            });
 
             test("QuietPacing", () =>
             {
